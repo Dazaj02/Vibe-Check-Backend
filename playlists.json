@@ -1,5 +1,29 @@
 {
   "MyPlaylist": [],
   "TestPlaylist": [],
-  "Demo": []
+  "Demo": [],
+  "Nueva": [],
+  "Test123": [
+    {
+      "title": "Test",
+      "artist": "Artist",
+      "duration": "3:30",
+      "pitch": 1,
+      "audio_url": "http://test.com"
+    }
+  ],
+  "NewTest1776112158": [],
+  "CurlTest1776112188": [],
+  "FrontendTest1776112223": [],
+  "ProxyTest1776112268": [],
+  "UploadTest_1776112367": [],
+  "UploadTest_1776112515": [
+    {
+      "title": "Test",
+      "artist": "Artist",
+      "duration": "3:00",
+      "pitch": 1,
+      "audio_url": "/testfile.mp3"
+    }
+  ]
 }

@@ -50,8 +50,11 @@ const upload = multer({
     },
   }),
   fileFilter: (_req, file, cb) => {
-    const allowedMimes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/aac']
-    if (allowedMimes.includes(file.mimetype)) {
+    const allowedMimes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/aac', 'application/octet-stream']
+    const allowedExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac']
+    const fileExt = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'))
+    
+    if (allowedMimes.includes(file.mimetype) || allowedExtensions.includes(fileExt)) {
       cb(null, true)
     } else {
       cb(new Error(`Invalid file type: ${file.mimetype}`))
@@ -568,7 +571,7 @@ app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Re
       artist: 'Local File',
       duration: '00:00',
       pitch: 1.0,
-      audio_url: `${file.filename}`,
+      audio_url: `/${file.filename}`,
     }))
 
     res.json({
