@@ -808,6 +808,30 @@ app.get('/api/stream', async (req: Request, res: Response) => {
   }
 
   try {
+    // Check if it's a YouTube URL
+    if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
+      // For YouTube URLs, try to get download info using ytdl-core
+      try {
+        const info = await ytdl.getInfo(url)
+        const formats = info.formats
+        
+        // Find the best audio format
+        const audioFormat = formats.find(f => f.mimeType?.includes('audio')) || formats[formats.length - 1]
+        
+        if (audioFormat && audioFormat.url) {
+          // Redirect to the audio stream
+          res.redirect(audioFormat.url)
+          return
+        }
+      } catch (e) {
+        console.warn('Could not get YouTube stream info:', e instanceof Error ? e.message : String(e))
+        // Fallback to direct URL (won't work for YouTube but worth trying)
+        res.redirect(url)
+        return
+      }
+    }
+
+    // For non-YouTube URLs, redirect directly
     res.redirect(url)
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
