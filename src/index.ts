@@ -4,6 +4,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
 import { fileURLToPath } from 'url'
+import ytdl from 'ytdl-core'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -233,7 +234,7 @@ class PlaylistService {
   }
 }
 
-// ============ YOUTUBE SERVICE (Simple Version) ============
+// ============ YOUTUBE SERVICE (with ytdl-core) ============
 class YoutubeService {
   private validateYoutubeUrl(url: string): boolean {
     try {
@@ -261,6 +262,17 @@ class YoutubeService {
     return match ? match[1] : null
   }
 
+  private formatDuration(seconds: number): string {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = seconds % 60
+    
+    if (hours > 0) {
+      return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    }
+    return `${minutes}:${String(secs).padStart(2, '0')}`
+  }
+
   async importPlaylist(youtubeUrl: string): Promise<Song[]> {
     try {
       console.log(`\n📥 YouTube Import Started: ${youtubeUrl}`)
@@ -274,8 +286,8 @@ class YoutubeService {
         throw new Error('Could not extract playlist ID from URL. Make sure the URL includes a playlist ID (list parameter).')
       }
 
-      // Create an entry for the playlist URL
-      // The frontend will handle fetching individual tracks from the playlist
+      // For now, create a single entry for the playlist URL
+      // The URL will be streamable and represent the whole playlist
       const songs: Song[] = [
         {
           title: 'YouTube Playlist',
@@ -309,23 +321,37 @@ class YoutubeService {
         throw new Error('Could not extract video ID from URL.')
       }
 
-      const song: Song = {
-        title: 'YouTube Video',
-        artist: 'YouTube',
-        duration: '00:00',
-        pitch: 1.0,
-        audio_url: youtubeUrl,
-      }
+      try {
+        // Try to get video info
+        const info = await ytdl.getBasicInfo(videoId)
+        const song: Song = {
+          title: info.videoDetails.title || 'YouTube Video',
+          artist: info.videoDetails.author?.name || 'YouTube',
+          duration: this.formatDuration(parseInt(info.videoDetails.lengthSeconds || '0', 10)),
+          pitch: 1.0,
+          audio_url: youtubeUrl,
+        }
 
-      console.log(`✓ Added song: ${song.title} (${videoId})\n`)
-      return song
+        console.log(`✓ Added song: ${song.title} by ${song.artist}\n`)
+        return song
+      } catch (e) {
+        console.warn(`⚠️  Could not fetch video details: ${e instanceof Error ? e.message : String(e)}`)
+        // Fallback to generic placeholder
+        return {
+          title: 'YouTube Video',
+          artist: 'YouTube',
+          duration: '00:00',
+          pitch: 1.0,
+          audio_url: youtubeUrl,
+        }
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`❌ Song import error: ${msg}\n`)
-       throw new Error(`Failed to add song: ${msg}`)
-     }
-   }
- }
+      throw new Error(`Failed to add song: ${msg}`)
+    }
+  }
+}
 
 // ============ LIBRARY SERVICE ============
 class LibraryService {
