@@ -161,6 +161,21 @@ class PlaylistService {
     return true
   }
 
+  moveSong(playlistName: string, fromIndex: number, toIndex: number): boolean {
+    const playlist = this.playlists.get(playlistName)
+    if (!playlist) return false
+    if (fromIndex < 0 || fromIndex >= playlist.length) return false
+    if (toIndex < 0 || toIndex >= playlist.length) return false
+    if (fromIndex === toIndex) return true
+
+    const song = playlist[fromIndex]
+    playlist.splice(fromIndex, 1)
+    playlist.splice(toIndex, 0, song)
+    
+    this.savePlaylists().catch(err => console.error('Save error:', err))
+    return true
+  }
+
   // ===== GLOBAL PLAYLIST STATE =====
   setCurrentPlaylist(name: string, index: number = 0): boolean {
     if (!this.playlists.has(name)) return false
@@ -286,21 +301,71 @@ class YoutubeService {
         throw new Error('Could not extract playlist ID from URL. Make sure the URL includes a playlist ID (list parameter).')
       }
 
-      // For now, create a single entry for the playlist URL
-      // The URL will be streamable and represent the whole playlist
-      const songs: Song[] = [
-        {
+      const songs: Song[] = []
+
+      try {
+        // Use ytdl to get playlist info
+        console.log(`🔍 Fetching playlist: ${listId}`)
+        
+        // Try to get playlist info using ytdl
+        let playlistInfo
+        try {
+          playlistInfo = await (ytdl as any).getPlaylist(youtubeUrl, { limit: Infinity })
+        } catch (e) {
+          console.log('⚠️  Could not fetch playlist with limit Infinity, trying with limit 100')
+          playlistInfo = await (ytdl as any).getPlaylist(youtubeUrl, { limit: 100 })
+        }
+
+        if (!playlistInfo || !playlistInfo.videos || playlistInfo.videos.length === 0) {
+          console.log('⚠️  Playlist is empty or could not be fetched')
+          return [{
+            title: 'YouTube Playlist',
+            artist: 'YouTube Music',
+            duration: '00:00',
+            pitch: 1.0,
+            audio_url: youtubeUrl,
+          }]
+        }
+
+        // Extract songs from playlist
+        console.log(`📊 Found ${playlistInfo.videos.length} videos in playlist`)
+        
+        for (const video of playlistInfo.videos) {
+          try {
+            const song: Song = {
+              title: video.title || 'Unknown Title',
+              artist: video.author?.name || 'YouTube',
+              duration: video.duration ? this.formatDuration(video.duration) : '00:00',
+              pitch: 1.0,
+              audio_url: `https://www.youtube.com/watch?v=${video.id}`,
+            }
+            songs.push(song)
+            console.log(`  ✓ Added: ${song.title}`)
+          } catch (e) {
+            console.log(`  ⚠️  Skipped one video due to error`)
+          }
+        }
+
+        if (songs.length === 0) {
+          throw new Error('No videos could be extracted from the playlist')
+        }
+
+        console.log(`✓ Playlist imported: ${listId}`)
+        console.log(`✓ Total items added: ${songs.length}\n`)
+        return songs
+      } catch (e) {
+        // Fallback: return playlist URL as single entry
+        const msg = e instanceof Error ? e.message : String(e)
+        console.log(`⚠️  Could not extract individual videos: ${msg}`)
+        console.log('ℹ️  Using playlist URL as single entry')
+        return [{
           title: 'YouTube Playlist',
           artist: 'YouTube Music',
           duration: '00:00',
           pitch: 1.0,
           audio_url: youtubeUrl,
-        },
-      ]
-
-      console.log(`✓ Playlist imported: ${listId}`)
-      console.log(`✓ Total items added: ${songs.length}\n`)
-      return songs
+        }]
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`❌ Import error: ${msg}\n`)
@@ -626,6 +691,33 @@ app.post('/api/playlists/:name/sort', (req: Request, res: Response) => {
     })
   } else {
     res.status(500).json({ detail: 'Failed to sort playlist' })
+  }
+})
+
+app.post('/api/playlists/:name/move-song', (req: Request, res: Response) => {
+  const name = decodeURIComponent(req.params.name)
+  const { fromIndex, toIndex } = req.body as { fromIndex: number; toIndex: number }
+
+  if (typeof fromIndex !== 'number' || typeof toIndex !== 'number') {
+    res.status(400).json({ detail: 'Missing or invalid fromIndex/toIndex' })
+    return
+  }
+
+  const playlist = playlistService.getPlaylist(name)
+  if (!playlist) {
+    res.status(404).json({ detail: `Playlist '${name}' not found` })
+    return
+  }
+
+  if (playlistService.moveSong(name, fromIndex, toIndex)) {
+    const updatedPlaylist = playlistService.getPlaylist(name)
+    res.json({
+      message: `Moved song from index ${fromIndex} to ${toIndex}`,
+      name,
+      songs: updatedPlaylist,
+    })
+  } else {
+    res.status(400).json({ detail: 'Failed to move song - invalid indices' })
   }
 })
 
