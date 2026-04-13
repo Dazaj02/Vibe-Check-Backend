@@ -1,29 +1,36 @@
 {
-  "MyPlaylist": [],
-  "TestPlaylist": [],
-  "Demo": [],
-  "Nueva": [],
-  "Test123": [
+  "David": [
     {
-      "title": "Test",
-      "artist": "Artist",
-      "duration": "3:30",
+      "title": "YouTube Music",
+      "artist": "YouTube",
+      "duration": "00:00",
       "pitch": 1,
-      "audio_url": "http://test.com"
+      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
     }
   ],
-  "NewTest1776112158": [],
-  "CurlTest1776112188": [],
-  "FrontendTest1776112223": [],
-  "ProxyTest1776112268": [],
-  "UploadTest_1776112367": [],
-  "UploadTest_1776112515": [
+  "YTMusicTest_1776112986": [
     {
-      "title": "Test",
-      "artist": "Artist",
-      "duration": "3:00",
+      "title": "YouTube Playlist",
+      "artist": "YouTube Music",
+      "duration": "00:00",
       "pitch": 1,
-      "audio_url": "/testfile.mp3"
+      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
+    }
+  ],
+  "NewPlaylist_1776113150": [
+    {
+      "title": "Uploaded Song",
+      "artist": "Local",
+      "duration": "3:45",
+      "pitch": 1,
+      "audio_url": "/1776113134556-valid.mp3"
+    },
+    {
+      "title": "YouTube Playlist",
+      "artist": "YouTube Music",
+      "duration": "00:00",
+      "pitch": 1,
+      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
     }
   ]
 }

@@ -237,12 +237,28 @@ class PlaylistService {
 class YoutubeService {
   private validateYoutubeUrl(url: string): boolean {
     try {
-      const videoMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/)
-      const playlistMatch = url.match(/youtube\.com\/playlist\?list=([^&\n?#]+)/)
-      return !!(videoMatch || playlistMatch)
+      // Support: youtube.com, youtu.be, music.youtube.com
+      const isYoutubeHost = url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')
+      
+      // Check for video ID (v= or /watch?v=)
+      const videoMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/.*[\?&]v=)([^&\n?#]+)/)
+      // Check for playlist ID (list=)
+      const playlistMatch = url.match(/[?&]list=([^&\n?#]+)/)
+      
+      return isYoutubeHost && !!(videoMatch || playlistMatch)
     } catch {
       return false
     }
+  }
+
+  private extractListId(url: string): string | null {
+    const match = url.match(/[?&]list=([^&\n?#]+)/)
+    return match ? match[1] : null
+  }
+
+  private extractVideoId(url: string): string | null {
+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/.*[\?&]v=)([^&\n?#]+)/)
+    return match ? match[1] : null
   }
 
   async importPlaylist(youtubeUrl: string): Promise<Song[]> {
@@ -250,21 +266,28 @@ class YoutubeService {
       console.log(`\n📥 YouTube Import Started: ${youtubeUrl}`)
 
       if (!this.validateYoutubeUrl(youtubeUrl)) {
-        throw new Error('Invalid YouTube URL format')
+        throw new Error('Invalid YouTube URL format. Please use a valid YouTube or YouTube Music playlist URL.')
       }
 
-      // Simple: create single entry for the URL
+      const listId = this.extractListId(youtubeUrl)
+      if (!listId) {
+        throw new Error('Could not extract playlist ID from URL. Make sure the URL includes a playlist ID (list parameter).')
+      }
+
+      // Create an entry for the playlist URL
+      // The frontend will handle fetching individual tracks from the playlist
       const songs: Song[] = [
         {
-          title: 'YouTube Music',
-          artist: 'YouTube',
+          title: 'YouTube Playlist',
+          artist: 'YouTube Music',
           duration: '00:00',
           pitch: 1.0,
           audio_url: youtubeUrl,
         },
       ]
 
-      console.log(`✓ Total songs added: ${songs.length}\n`)
+      console.log(`✓ Playlist imported: ${listId}`)
+      console.log(`✓ Total items added: ${songs.length}\n`)
       return songs
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
@@ -278,18 +301,23 @@ class YoutubeService {
       console.log(`\n📥 YouTube Song Import: ${youtubeUrl}`)
 
       if (!this.validateYoutubeUrl(youtubeUrl)) {
-        throw new Error('Invalid YouTube URL format')
+        throw new Error('Invalid YouTube URL format. Please use a valid YouTube video URL.')
+      }
+
+      const videoId = this.extractVideoId(youtubeUrl)
+      if (!videoId) {
+        throw new Error('Could not extract video ID from URL.')
       }
 
       const song: Song = {
-        title: 'YouTube Music',
+        title: 'YouTube Video',
         artist: 'YouTube',
         duration: '00:00',
         pitch: 1.0,
         audio_url: youtubeUrl,
       }
 
-      console.log(`✓ Added song: ${song.title}\n`)
+      console.log(`✓ Added song: ${song.title} (${videoId})\n`)
       return song
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
