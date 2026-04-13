@@ -608,20 +608,74 @@ app.post('/api/playlists/:name/add-youtube', async (req: Request, res: Response)
   const name = decodeURIComponent(req.params.name)
   const payload = req.body as { youtube_url: string }
 
-  const playlist = playlistService.getPlaylist(name)
-  if (!playlist) {
-    res.status(404).json({ detail: `Playlist '${name}' not found` })
+   const playlist = playlistService.getPlaylist(name)
+   if (!playlist) {
+     res.status(404).json({ detail: `Playlist '${name}' not found` })
+     return
+   }
+
+   try {
+     const songs = await youtubeService.importPlaylist(payload.youtube_url)
+     songs.forEach(song => {
+       playlistService.addSongToPlaylist(name, song)
+       libraryService.addSong(song) // Add to library as well
+     })
+     res.json({
+       message: `Successfully imported ${songs.length} songs from YouTube`,
+       name,
+       songs_added: songs.length,
+       total_songs: playlistService.getPlaylist(name)?.length || 0,
+     })
+   } catch (error) {
+     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+     res.status(500).json({ detail: errorMsg })
+   }
+ })
+
+ app.post('/api/playlists/:name/add-youtube-song', async (req: Request, res: Response) => {
+   const name = decodeURIComponent(req.params.name)
+   const payload = req.body as { youtube_url: string }
+
+   const playlist = playlistService.getPlaylist(name)
+   if (!playlist) {
+     res.status(404).json({ detail: `Playlist '${name}' not found` })
+     return
+   }
+
+   try {
+     const song = await youtubeService.importSong(payload.youtube_url)
+     playlistService.addSongToPlaylist(name, song)
+     libraryService.addSong(song) // Add to library as well
+     res.json({
+       message: 'Successfully added song from YouTube',
+       name,
+       song_title: song.title,
+       total_songs: playlistService.getPlaylist(name)?.length || 0,
+     })
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+      res.status(500).json({ detail: errorMsg })
+    }
+  })
+
+// ============ LIBRARY YOUTUBE IMPORT ============
+app.post('/api/library/import-youtube', async (req: Request, res: Response) => {
+  const payload = req.body as { youtube_url: string }
+
+  if (!payload.youtube_url) {
+    res.status(400).json({ detail: 'Missing youtube_url' })
     return
   }
 
   try {
     const songs = await youtubeService.importPlaylist(payload.youtube_url)
-    songs.forEach(song => playlistService.addSongToPlaylist(name, song))
+    songs.forEach(song => libraryService.addSong(song))
+    
     res.json({
-      message: `Successfully imported ${songs.length} songs from YouTube`,
-      name,
+      message: `Successfully imported ${songs.length} song(s) from YouTube to library`,
       songs_added: songs.length,
-      total_songs: playlistService.getPlaylist(name)?.length || 0,
+      total_library: libraryService.getAllSongs().length,
+      songs: libraryService.getAllSongs(),
     })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -629,32 +683,7 @@ app.post('/api/playlists/:name/add-youtube', async (req: Request, res: Response)
   }
 })
 
-app.post('/api/playlists/:name/add-youtube-song', async (req: Request, res: Response) => {
-  const name = decodeURIComponent(req.params.name)
-  const payload = req.body as { youtube_url: string }
-
-  const playlist = playlistService.getPlaylist(name)
-  if (!playlist) {
-    res.status(404).json({ detail: `Playlist '${name}' not found` })
-    return
-  }
-
-  try {
-    const song = await youtubeService.importSong(payload.youtube_url)
-    playlistService.addSongToPlaylist(name, song)
-    res.json({
-      message: 'Successfully added song from YouTube',
-      name,
-      song_title: song.title,
-      total_songs: playlistService.getPlaylist(name)?.length || 0,
-    })
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-    res.status(500).json({ detail: errorMsg })
-  }
-})
-
-// ============ FILE UPLOAD ============
+ // ============ FILE UPLOAD ============
 app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Request, res: Response) => {
   if (!req.files || req.files.length === 0) {
     res.status(400).json({ detail: 'No files uploaded' })
