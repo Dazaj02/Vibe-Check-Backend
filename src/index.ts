@@ -322,14 +322,82 @@ class YoutubeService {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`❌ Song import error: ${msg}\n`)
-      throw new Error(`Failed to add song: ${msg}`)
+       throw new Error(`Failed to add song: ${msg}`)
+     }
+   }
+ }
+
+// ============ LIBRARY SERVICE ============
+class LibraryService {
+  private librarySongs: Song[] = []
+  private libraryFile = path.join(__dirname, '..', 'library.json')
+
+  async loadLibrary(): Promise<void> {
+    try {
+      const exists = await this.fileExists(this.libraryFile)
+      if (exists) {
+        const data = await fs.readFile(this.libraryFile, 'utf-8')
+        const parsed = JSON.parse(data) as Song[]
+        this.librarySongs = Array.isArray(parsed) ? parsed : []
+        console.log(`✓ Loaded ${this.librarySongs.length} songs in library`)
+      } else {
+        this.librarySongs = []
+      }
+    } catch (error) {
+      console.error('❌ Error loading library:', error)
+      this.librarySongs = []
     }
+  }
+
+  async saveLibrary(): Promise<void> {
+    try {
+      await fs.writeFile(this.libraryFile, JSON.stringify(this.librarySongs, null, 2))
+    } catch (error) {
+      console.error('❌ Error saving library:', error)
+    }
+  }
+
+  private async fileExists(filepath: string): Promise<boolean> {
+    try {
+      await fs.access(filepath)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  getAllSongs(): Song[] {
+    return this.librarySongs
+  }
+
+  addSong(song: Song): boolean {
+    // Check if song already exists
+    const exists = this.librarySongs.some(s => s.audio_url === song.audio_url)
+    if (exists) return false
+
+    this.librarySongs.push(song)
+    this.saveLibrary().catch(err => console.error('Error saving library:', err))
+    return true
+  }
+
+  removeSong(audioUrl: string): boolean {
+    const index = this.librarySongs.findIndex(s => s.audio_url === audioUrl)
+    if (index === -1) return false
+
+    this.librarySongs.splice(index, 1)
+    this.saveLibrary().catch(err => console.error('Error saving library:', err))
+    return true
+  }
+
+  getSongByUrl(audioUrl: string): Song | undefined {
+    return this.librarySongs.find(s => s.audio_url === audioUrl)
   }
 }
 
 // ============ INITIALIZE SERVICES ============
 const playlistService = new PlaylistService()
 const youtubeService = new YoutubeService()
+const libraryService = new LibraryService()
 
 // ============ CREATE EXPRESS APP ============
 const app: Express = express()
@@ -346,8 +414,9 @@ app.use(
 app.use(express.json({ limit: '50mb' }))
 app.use(express.static(UPLOADS_DIR))
 
-// Load playlists on startup
+// Load playlists and library on startup
 await playlistService.loadPlaylists()
+await libraryService.loadLibrary()
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (_req, res) => {
@@ -602,14 +671,75 @@ app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Re
       audio_url: `/${file.filename}`,
     }))
 
+    // Add songs to library
+    let addedToLibrary = 0
+    for (const song of songs) {
+      if (libraryService.addSong(song)) {
+        addedToLibrary++
+      }
+    }
+
     res.json({
       message: `Successfully uploaded ${songs.length} file(s)`,
       songs_added: songs.length,
       songs,
+      added_to_library: addedToLibrary,
     })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
     res.status(500).json({ detail: errorMsg })
+  }
+})
+
+// ============ LIBRARY MANAGEMENT ============
+app.get('/api/library', (_req: Request, res: Response) => {
+  const songs = libraryService.getAllSongs()
+  res.json({
+    songs,
+    total: songs.length,
+    message: `Library contains ${songs.length} song(s)`,
+  })
+})
+
+app.delete('/api/library/:audioUrl', (req: Request, res: Response) => {
+  const audioUrl = decodeURIComponent(req.params.audioUrl)
+  
+  if (libraryService.removeSong(audioUrl)) {
+    res.json({
+      message: 'Song removed from library',
+      removed: audioUrl,
+    })
+  } else {
+    res.status(404).json({
+      detail: 'Song not found in library',
+    })
+  }
+})
+
+app.post('/api/library/add-to-playlist', (req: Request, res: Response) => {
+  const { playlistName, audioUrl } = req.body as { playlistName: string; audioUrl: string }
+  
+  if (!playlistName || !audioUrl) {
+    res.status(400).json({ detail: 'Missing playlistName or audioUrl' })
+    return
+  }
+
+  const song = libraryService.getSongByUrl(audioUrl)
+  if (!song) {
+    res.status(404).json({ detail: 'Song not found in library' })
+    return
+  }
+
+  if (playlistService.addSongToPlaylist(playlistName, song)) {
+    res.json({
+      message: `Added song to playlist '${playlistName}'`,
+      playlist: playlistName,
+      song: song.title,
+    })
+  } else {
+    res.status(400).json({
+      detail: `Could not add song to playlist '${playlistName}'`,
+    })
   }
 })
 
