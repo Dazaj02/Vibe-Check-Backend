@@ -1,36 +1,25 @@
 {
   "David": [
     {
-      "title": "YouTube Music",
-      "artist": "YouTube",
-      "duration": "00:00",
-      "pitch": 1,
-      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
-    }
-  ],
-  "YTMusicTest_1776112986": [
-    {
       "title": "YouTube Playlist",
       "artist": "YouTube Music",
       "duration": "00:00",
       "pitch": 1,
-      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
-    }
-  ],
-  "NewPlaylist_1776113150": [
-    {
-      "title": "Uploaded Song",
-      "artist": "Local",
-      "duration": "3:45",
-      "pitch": 1,
-      "audio_url": "/1776113134556-valid.mp3"
+      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=J169o5VmMhdh-6kk"
     },
     {
       "title": "YouTube Playlist",
       "artist": "YouTube Music",
       "duration": "00:00",
       "pitch": 1,
-      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=3gizKdFrVVDvkddq"
+      "audio_url": "https://music.youtube.com/playlist?list=PLNEna6-LRtnwgeqRE1bYKTPgIVR5FNepP&si=J169o5VmMhdh-6kk"
+    },
+    {
+      "title": "1776114994797-Daft Punk - Instant Crush (feat. Julian Casablancas)",
+      "artist": "Local File",
+      "duration": "00:00",
+      "pitch": 1,
+      "audio_url": "/1776114994797-Daft Punk - Instant Crush (feat. Julian Casablancas).mp3"
     }
   ]
 }
