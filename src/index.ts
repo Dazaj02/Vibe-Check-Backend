@@ -3,8 +3,11 @@ import cors from 'cors'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
+import { request as httpsRequest } from 'https'
 import { fileURLToPath } from 'url'
 import ytdl from 'ytdl-core'
+import play from 'play-dl'
+import youtubeDl from 'youtube-dl-exec'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -31,6 +34,89 @@ interface YoutubeImportRequest {
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8000
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
 const PLAYLISTS_FILE = path.join(__dirname, '..', 'playlists.json')
+const SONGS_PLAYLIST = '__songs__'
+
+const normalizeSongTitle = (rawTitle: string): string => {
+  let title = rawTitle
+  title = title.replace(/^\d{10,}-/, '')
+  title = title.replace(/^\d+[\s._-]+/, '')
+  title = title.replace(/[_]+/g, ' ')
+  title = title.replace(/\s+/g, ' ').trim()
+  return title
+}
+
+const proxyRemoteAudio = (
+  remoteUrl: string,
+  req: Request,
+  res: Response,
+  extraHeaders?: Record<string, string>,
+): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const upstreamHeaders: Record<string, string> = {
+      'user-agent': typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : 'Mozilla/5.0',
+      referer: 'https://www.youtube.com/',
+      origin: 'https://www.youtube.com',
+    }
+
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        if (typeof value === 'string' && value.trim() !== '') {
+          upstreamHeaders[key.toLowerCase()] = value
+        }
+      }
+    }
+
+    if (typeof req.headers.range === 'string' && req.headers.range.trim() !== '') {
+      upstreamHeaders.range = req.headers.range
+    }
+
+    const upstreamReq = httpsRequest(remoteUrl, {
+      headers: upstreamHeaders,
+    }, (remoteRes) => {
+      const status = remoteRes.statusCode || 500
+
+      if (status >= 400) {
+        reject(new Error(`Remote audio request failed with status ${status}`))
+        return
+      }
+
+      res.status(status)
+
+      const headersToForward = [
+        'content-type',
+        'content-length',
+        'accept-ranges',
+        'cache-control',
+        'content-range',
+        'content-encoding',
+      ] as const
+      for (const h of headersToForward) {
+        const value = remoteRes.headers[h]
+        if (value) {
+          res.setHeader(h, value)
+        }
+      }
+
+      if (!res.getHeader('content-type')) {
+        res.setHeader('content-type', 'audio/webm')
+      }
+
+      remoteRes.on('error', reject)
+
+      if (req.method === 'HEAD') {
+        res.end()
+        resolve()
+        return
+      }
+
+      remoteRes.pipe(res)
+      remoteRes.on('end', () => resolve())
+    })
+
+    upstreamReq.on('error', reject)
+    upstreamReq.end()
+  })
+}
 
 // CORS Configuration
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
@@ -78,9 +164,15 @@ class PlaylistService {
         this.playlists = new Map(Object.entries(parsed))
         console.log(`✓ Loaded ${this.playlists.size} playlists`)
       }
+      if (!this.playlists.has(SONGS_PLAYLIST)) {
+        this.playlists.set(SONGS_PLAYLIST, [])
+        await this.savePlaylists()
+      }
     } catch (error) {
       console.error('❌ Error loading playlists:', error)
       this.playlists = new Map()
+      this.playlists.set(SONGS_PLAYLIST, [])
+      await this.savePlaylists()
     }
   }
 
@@ -111,7 +203,7 @@ class PlaylistService {
   }
 
   getPlaylists(): string[] {
-    return Array.from(this.playlists.keys())
+    return Array.from(this.playlists.keys()).filter(name => name !== SONGS_PLAYLIST)
   }
 
   getPlaylist(name: string): Song[] | null {
@@ -139,6 +231,15 @@ class PlaylistService {
     const filtered = playlist.filter(song => song.title !== songTitle)
     if (filtered.length === initialLength) return false
     this.playlists.set(playlistName, filtered)
+    this.savePlaylists().catch(err => console.error('Save error:', err))
+    return true
+  }
+
+  removeSongFromPlaylistByIndex(playlistName: string, index: number): boolean {
+    const playlist = this.playlists.get(playlistName)
+    if (!playlist) return false
+    if (index < 0 || index >= playlist.length) return false
+    playlist.splice(index, 1)
     this.savePlaylists().catch(err => console.error('Save error:', err))
     return true
   }
@@ -301,71 +402,31 @@ class YoutubeService {
         throw new Error('Could not extract playlist ID from URL. Make sure the URL includes a playlist ID (list parameter).')
       }
 
-      const songs: Song[] = []
+      console.log(`🔍 Fetching playlist: ${listId}`)
+      const playlistInfo = await play.playlist_info(youtubeUrl, { incomplete: true })
+      const videos = await playlistInfo.all_videos()
 
-      try {
-        // Use ytdl to get playlist info
-        console.log(`🔍 Fetching playlist: ${listId}`)
-        
-        // Try to get playlist info using ytdl
-        let playlistInfo
-        try {
-          playlistInfo = await (ytdl as any).getPlaylist(youtubeUrl, { limit: Infinity })
-        } catch (e) {
-          console.log('⚠️  Could not fetch playlist with limit Infinity, trying with limit 100')
-          playlistInfo = await (ytdl as any).getPlaylist(youtubeUrl, { limit: 100 })
-        }
-
-        if (!playlistInfo || !playlistInfo.videos || playlistInfo.videos.length === 0) {
-          console.log('⚠️  Playlist is empty or could not be fetched')
-          return [{
-            title: 'YouTube Playlist',
-            artist: 'YouTube Music',
-            duration: '00:00',
-            pitch: 1.0,
-            audio_url: youtubeUrl,
-          }]
-        }
-
-        // Extract songs from playlist
-        console.log(`📊 Found ${playlistInfo.videos.length} videos in playlist`)
-        
-        for (const video of playlistInfo.videos) {
-          try {
-            const song: Song = {
-              title: video.title || 'Unknown Title',
-              artist: video.author?.name || 'YouTube',
-              duration: video.duration ? this.formatDuration(video.duration) : '00:00',
-              pitch: 1.0,
-              audio_url: `https://www.youtube.com/watch?v=${video.id}`,
-            }
-            songs.push(song)
-            console.log(`  ✓ Added: ${song.title}`)
-          } catch (e) {
-            console.log(`  ⚠️  Skipped one video due to error`)
-          }
-        }
-
-        if (songs.length === 0) {
-          throw new Error('No videos could be extracted from the playlist')
-        }
-
-        console.log(`✓ Playlist imported: ${listId}`)
-        console.log(`✓ Total items added: ${songs.length}\n`)
-        return songs
-      } catch (e) {
-        // Fallback: return playlist URL as single entry
-        const msg = e instanceof Error ? e.message : String(e)
-        console.log(`⚠️  Could not extract individual videos: ${msg}`)
-        console.log('ℹ️  Using playlist URL as single entry')
-        return [{
-          title: 'YouTube Playlist',
-          artist: 'YouTube Music',
-          duration: '00:00',
-          pitch: 1.0,
-          audio_url: youtubeUrl,
-        }]
+      if (!videos || videos.length === 0) {
+        throw new Error('Playlist has no visible videos')
       }
+
+      const songs: Song[] = videos
+        .filter(video => !!video.url)
+        .map(video => ({
+          title: video.title || 'Unknown Title',
+          artist: video.channel?.name || 'YouTube',
+          duration: this.formatDuration(video.durationInSec || 0),
+          pitch: 1.0,
+          audio_url: video.url,
+        }))
+
+      if (songs.length === 0) {
+        throw new Error('No valid videos could be extracted from this playlist')
+      }
+
+      console.log(`✓ Playlist imported: ${listId}`)
+      console.log(`✓ Total items added: ${songs.length}\n`)
+      return songs
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`❌ Import error: ${msg}\n`)
@@ -508,6 +569,7 @@ app.use(express.static(UPLOADS_DIR))
 // Load playlists and library on startup
 await playlistService.loadPlaylists()
 await libraryService.loadLibrary()
+playlistService.setCurrentPlaylist(SONGS_PLAYLIST)
 
 // ============ HEALTH CHECK ============
 app.get('/api/health', (_req, res) => {
@@ -532,6 +594,15 @@ app.post('/api/playlist/select', (req: Request, res: Response) => {
     res.json({ message: `Loaded playlist: ${name}`, ...state })
   } else {
     res.status(404).json({ detail: `Playlist '${name}' not found` })
+  }
+})
+
+app.post('/api/playlist/select-songs', (_req: Request, res: Response) => {
+  if (playlistService.setCurrentPlaylist(SONGS_PLAYLIST)) {
+    const state = playlistService.getPlaylistState()
+    res.json({ message: 'Loaded songs', ...state })
+  } else {
+    res.status(500).json({ detail: 'Songs list not available' })
   }
 })
 
@@ -667,6 +738,32 @@ app.delete('/api/playlists/:name/songs/:title', (req: Request, res: Response) =>
   }
 })
 
+app.delete('/api/playlists/:name/songs/index/:index', (req: Request, res: Response) => {
+  const name = decodeURIComponent(req.params.name)
+  const index = parseInt(req.params.index, 10)
+
+  if (Number.isNaN(index)) {
+    res.status(400).json({ detail: 'Invalid index' })
+    return
+  }
+
+  const playlist = playlistService.getPlaylist(name)
+  if (!playlist) {
+    res.status(404).json({ detail: `Playlist '${name}' not found` })
+    return
+  }
+
+  if (playlistService.removeSongFromPlaylistByIndex(name, index)) {
+    res.json({
+      message: `Removed song at index ${index} from '${name}'`,
+      name,
+      total_songs: playlistService.getPlaylist(name)?.length || 0,
+    })
+  } else {
+    res.status(404).json({ detail: `Song at index '${index}' not found` })
+  }
+})
+
 app.post('/api/playlists/:name/sort', (req: Request, res: Response) => {
   const name = decodeURIComponent(req.params.name)
   const { sortBy } = req.body as { sortBy: 'title' | 'artist' | 'duration' }
@@ -732,12 +829,11 @@ app.post('/api/playlists/:name/add-youtube', async (req: Request, res: Response)
      return
    }
 
-   try {
+    try {
      const songs = await youtubeService.importPlaylist(payload.youtube_url)
-     songs.forEach(song => {
-       playlistService.addSongToPlaylist(name, song)
-       libraryService.addSong(song) // Add to library as well
-     })
+      songs.forEach(song => {
+        playlistService.addSongToPlaylist(name, song)
+      })
      res.json({
        message: `Successfully imported ${songs.length} songs from YouTube`,
        name,
@@ -763,8 +859,7 @@ app.post('/api/playlists/:name/add-youtube', async (req: Request, res: Response)
    try {
      const song = await youtubeService.importSong(payload.youtube_url)
      playlistService.addSongToPlaylist(name, song)
-     libraryService.addSong(song) // Add to library as well
-     res.json({
+      res.json({
        message: 'Successfully added song from YouTube',
        name,
        song_title: song.title,
@@ -811,18 +906,18 @@ app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Re
   try {
     const uploadedFiles = req.files as Express.Multer.File[]
     const songs: Song[] = uploadedFiles.map(file => ({
-      title: path.parse(file.filename).name,
+      title: normalizeSongTitle(path.parse(file.filename).name),
       artist: 'Local File',
       duration: '00:00',
       pitch: 1.0,
       audio_url: `/${file.filename}`,
     }))
 
-    // Add songs to library
-    let addedToLibrary = 0
+    // Add songs to global songs list
+    let addedToSongs = 0
     for (const song of songs) {
-      if (libraryService.addSong(song)) {
-        addedToLibrary++
+      if (playlistService.addSongToPlaylist(SONGS_PLAYLIST, song)) {
+        addedToSongs++
       }
     }
 
@@ -830,7 +925,7 @@ app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Re
       message: `Successfully uploaded ${songs.length} file(s)`,
       songs_added: songs.length,
       songs,
-      added_to_library: addedToLibrary,
+      added_to_songs: addedToSongs,
     })
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -900,25 +995,58 @@ app.get('/api/stream', async (req: Request, res: Response) => {
   }
 
   try {
+    // Local uploaded file path: serve directly from uploads
+    if (url.startsWith('/')) {
+      const fileName = path.basename(decodeURIComponent(url))
+      const filePath = path.join(UPLOADS_DIR, fileName)
+
+      try {
+        await fs.access(filePath)
+        res.sendFile(filePath)
+        return
+      } catch {
+        res.status(404).json({ error: 'Local audio file not found' })
+        return
+      }
+    }
+
     // Check if it's a YouTube URL
     if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
-      // For YouTube URLs, try to get download info using ytdl-core
       try {
-        const info = await ytdl.getInfo(url)
-        const formats = info.formats
-        
-        // Find the best audio format
-        const audioFormat = formats.find(f => f.mimeType?.includes('audio')) || formats[formats.length - 1]
-        
-        if (audioFormat && audioFormat.url) {
-          // Redirect to the audio stream
-          res.redirect(audioFormat.url)
-          return
+        // Use yt-dlp first and prefer m4a/mp4a for browser compatibility
+        const info = await youtubeDl(url, {
+          dumpSingleJson: true,
+          skipDownload: true,
+          noWarnings: true,
+          callHome: false,
+          format: '140/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio',
+        }) as unknown as {
+          url?: string
+          requested_downloads?: Array<{ url?: string; http_headers?: Record<string, string> }>
         }
+
+        const directUrl = info?.requested_downloads?.[0]?.url || info?.url
+        const directHeaders = info?.requested_downloads?.[0]?.http_headers
+        if (!directUrl) {
+          throw new Error('yt-dlp did not return a direct media URL')
+        }
+
+        await proxyRemoteAudio(directUrl, req, res, directHeaders)
+        return
       } catch (e) {
-        console.warn('Could not get YouTube stream info:', e instanceof Error ? e.message : String(e))
-        // Fallback to direct URL (won't work for YouTube but worth trying)
-        res.redirect(url)
+        const msg = e instanceof Error ? e.message : String(e)
+        console.warn('Could not stream YouTube audio:', msg)
+        // Final fallback to play-dl stream
+        try {
+          res.setHeader('Content-Type', 'audio/webm')
+          res.setHeader('Accept-Ranges', 'bytes')
+          const ytStream = await play.stream(url, { quality: 2 })
+          ytStream.stream.pipe(res)
+          return
+        } catch (playErr) {
+          const playMsg = playErr instanceof Error ? playErr.message : String(playErr)
+          res.status(500).json({ error: `Could not stream YouTube audio: ${msg} | playdl: ${playMsg}` })
+        }
         return
       }
     }
