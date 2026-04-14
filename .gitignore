@@ -1,0 +1,17 @@
+node_modules/
+dist/
+uploads/
+*.log
+*.tmp
+*.cache
+.env
+.env.*
+!.env.example
+
+# Local IDE/editor folders
+.idea/
+.vscode/
+
+# Local workspace leftovers (not backend repo source)
+frontend/
+server/
