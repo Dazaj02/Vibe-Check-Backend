@@ -208,7 +208,12 @@ const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCa
 }
 
 // CORS Configuration
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
+const rawOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(o => o !== '')
+
+const ALLOWED_ORIGINS = rawOrigins.length > 0 ? rawOrigins : [
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:8000',
