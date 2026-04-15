@@ -507,6 +507,85 @@ class YoutubeService {
     return `${minutes}:${String(secs).padStart(2, '0')}`
   }
 
+  private parseDurationToSeconds(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value)
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed === '') return 0
+
+      if (/^\d+$/.test(trimmed)) {
+        return Math.max(0, parseInt(trimmed, 10))
+      }
+
+      const parts = trimmed.split(':').map((p) => parseInt(p, 10))
+      if (parts.some((p) => Number.isNaN(p))) {
+        return 0
+      }
+
+      if (parts.length === 2) {
+        return Math.max(0, (parts[0] * 60) + parts[1])
+      }
+
+      if (parts.length === 3) {
+        return Math.max(0, (parts[0] * 3600) + (parts[1] * 60) + parts[2])
+      }
+    }
+
+    return 0
+  }
+
+  private async importPlaylistWithYtDlp(youtubeUrl: string): Promise<Song[]> {
+    const info = await youtubeDl(youtubeUrl, {
+      dumpSingleJson: true,
+      flatPlaylist: true,
+      skipDownload: true,
+      noWarnings: true,
+      callHome: false,
+    }) as unknown as {
+      entries?: Array<{
+        id?: string
+        title?: string
+        duration?: number | string
+        url?: string
+        uploader?: string
+        channel?: string
+        webpage_url?: string
+      }>
+    }
+
+    const entries = Array.isArray(info?.entries) ? info.entries : []
+
+    const mapped: Array<Song | null> = entries
+      .map((entry) => {
+        const videoId = typeof entry.id === 'string' && entry.id.trim() !== '' ? entry.id : null
+        const candidateUrl =
+          (typeof entry.webpage_url === 'string' && entry.webpage_url) ||
+          (typeof entry.url === 'string' && entry.url.startsWith('http') ? entry.url : '') ||
+          (videoId ? `https://www.youtube.com/watch?v=${videoId}` : '')
+
+        if (!candidateUrl) {
+          return null
+        }
+
+        const durationSeconds = this.parseDurationToSeconds(entry.duration)
+        const song: Song = {
+          id: randomUUID(),
+          title: entry.title || 'Unknown Title',
+          artist: entry.uploader || entry.channel || 'YouTube',
+          duration: this.formatDuration(durationSeconds),
+          pitch: 1.0,
+          audio_url: candidateUrl,
+        }
+
+        return song
+      })
+
+    return mapped.filter((song): song is Song => song !== null)
+  }
+
   async importPlaylist(youtubeUrl: string): Promise<Song[]> {
     try {
       console.log(`\n📥 YouTube Import Started: ${youtubeUrl}`)
@@ -521,26 +600,41 @@ class YoutubeService {
       }
 
       console.log(`🔍 Fetching playlist: ${listId}`)
-      const playlistInfo = await play.playlist_info(youtubeUrl, { incomplete: true })
-      const videos = await playlistInfo.all_videos()
 
-      if (!videos || videos.length === 0) {
-        throw new Error('Playlist has no visible videos')
+      let songs: Song[] = []
+      let ytDlpError: string | null = null
+      let playDlErrorMsg: string | null = null
+
+      try {
+        songs = await this.importPlaylistWithYtDlp(youtubeUrl)
+      } catch (ytErr) {
+        ytDlpError = ytErr instanceof Error ? ytErr.message : String(ytErr)
+        console.warn(`⚠️ yt-dlp failed (${ytDlpError}). Trying play-dl fallback...`)
       }
 
-      const songs: Song[] = videos
-        .filter(video => !!video.url)
-        .map(video => ({
-          id: randomUUID(),
-          title: video.title || 'Unknown Title',
-          artist: video.channel?.name || 'YouTube',
-          duration: this.formatDuration(video.durationInSec || 0),
-          pitch: 1.0,
-          audio_url: video.url,
-        }))
+      if (songs.length === 0) {
+        try {
+          const playlistInfo = await play.playlist_info(youtubeUrl, { incomplete: true })
+          const videos = await playlistInfo.all_videos()
+
+          songs = (videos || [])
+            .filter((video) => !!video.url)
+            .map((video) => ({
+              id: randomUUID(),
+              title: video.title || 'Unknown Title',
+              artist: video.channel?.name || 'YouTube',
+              duration: this.formatDuration(video.durationInSec || 0),
+              pitch: 1.0,
+              audio_url: video.url,
+            }))
+        } catch (playDlError) {
+          playDlErrorMsg = playDlError instanceof Error ? playDlError.message : String(playDlError)
+          console.warn(`⚠️ play-dl failed (${playDlErrorMsg}).`)
+        }
+      }
 
       if (songs.length === 0) {
-        throw new Error('No valid videos could be extracted from this playlist')
+        throw new Error(`No valid videos could be extracted from this playlist. yt-dlp: ${ytDlpError || 'no data'} | play-dl: ${playDlErrorMsg || 'no data'}`)
       }
 
       console.log(`✓ Playlist imported: ${listId}`)

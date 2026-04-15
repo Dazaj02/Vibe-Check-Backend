@@ -15,3 +15,4 @@ uploads/
 # Local workspace leftovers (not backend repo source)
 frontend/
 server/
+*.mp4
