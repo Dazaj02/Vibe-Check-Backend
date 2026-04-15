@@ -4,6 +4,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
 import { request as httpsRequest } from 'https'
+import { createHash, randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
 import ytdl from 'ytdl-core'
 import play from 'play-dl'
@@ -14,6 +15,7 @@ const __dirname = path.dirname(__filename)
 
 // ============ TYPES ============
 interface Song {
+  id: string
   title: string
   artist: string
   duration: string
@@ -43,6 +45,22 @@ const normalizeSongTitle = (rawTitle: string): string => {
   title = title.replace(/[_]+/g, ' ')
   title = title.replace(/\s+/g, ' ').trim()
   return title
+}
+
+const buildSongId = (song: Omit<Song, 'id'>): string => {
+  const fingerprint = `${song.audio_url}::${song.title}::${song.artist}`
+  return createHash('sha1').update(fingerprint).digest('hex').slice(0, 16)
+}
+
+const ensureSongId = (song: Song | Omit<Song, 'id'>): Song => {
+  if ('id' in song && typeof song.id === 'string' && song.id.trim() !== '') {
+    return song
+  }
+  const withoutId = song as Omit<Song, 'id'>
+  return {
+    id: buildSongId(withoutId),
+    ...withoutId,
+  }
 }
 
 const proxyRemoteAudio = (
@@ -118,6 +136,53 @@ const proxyRemoteAudio = (
   })
 }
 
+interface DirectAudioCandidate {
+  url: string
+  headers?: Record<string, string>
+  contentTypeHint?: string
+}
+
+const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCandidate[]> => {
+  const formats = [
+    '140/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio',
+    '251/bestaudio[ext=webm]/bestaudio',
+    'bestaudio',
+  ]
+
+  const candidates: DirectAudioCandidate[] = []
+  for (const format of formats) {
+    try {
+      const info = await youtubeDl(url, {
+        dumpSingleJson: true,
+        skipDownload: true,
+        noWarnings: true,
+        callHome: false,
+        format,
+      }) as unknown as {
+        url?: string
+        ext?: string
+        requested_downloads?: Array<{ url?: string; http_headers?: Record<string, string> }>
+      }
+
+      const directUrl = info?.requested_downloads?.[0]?.url || info?.url
+      const directHeaders = info?.requested_downloads?.[0]?.http_headers
+      if (!directUrl) {
+        continue
+      }
+
+      const contentTypeHint = info?.ext === 'm4a' ? 'audio/mp4' : info?.ext === 'webm' ? 'audio/webm' : undefined
+
+      if (!candidates.some((candidate) => candidate.url === directUrl)) {
+        candidates.push({ url: directUrl, headers: directHeaders, contentTypeHint })
+      }
+    } catch {
+      // Try next format fallback
+    }
+  }
+
+  return candidates
+}
+
 // CORS Configuration
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
@@ -161,7 +226,11 @@ class PlaylistService {
       if (exists) {
         const data = await fs.readFile(PLAYLISTS_FILE, 'utf-8')
         const parsed = JSON.parse(data) as Record<string, Song[]>
-        this.playlists = new Map(Object.entries(parsed))
+        const migrated = Object.entries(parsed).map(([name, songs]) => [
+          name,
+          (Array.isArray(songs) ? songs : []).map((song) => ensureSongId(song)),
+        ] as const)
+        this.playlists = new Map(migrated)
         console.log(`✓ Loaded ${this.playlists.size} playlists`)
       }
       if (!this.playlists.has(SONGS_PLAYLIST)) {
@@ -213,7 +282,7 @@ class PlaylistService {
   addSongToPlaylist(playlistName: string, song: Song): boolean {
     const playlist = this.playlists.get(playlistName)
     if (!playlist) return false
-    playlist.push(song)
+    playlist.push(ensureSongId(song))
     this.savePlaylists().catch(err => console.error('Save error:', err))
     return true
   }
@@ -277,16 +346,45 @@ class PlaylistService {
     return true
   }
 
+  syncCurrentIndexBySongId(songId: string): void {
+    if (!this.currentPlaylist) return
+    const songs = this.playlists.get(this.currentPlaylist)
+    if (!songs || songs.length === 0) return
+    const idx = songs.findIndex((song) => song.id === songId)
+    if (idx >= 0) {
+      this.currentIndex = idx
+    }
+  }
+
+  updateCurrentSongId(songId: string): Song | null {
+    if (!this.currentPlaylist) return null
+    const songs = this.playlists.get(this.currentPlaylist)
+    if (!songs || songs.length === 0) return null
+    const idx = songs.findIndex((song) => song.id === songId)
+    if (idx < 0) return null
+    this.currentIndex = idx
+    return songs[idx]
+  }
+
   // ===== GLOBAL PLAYLIST STATE =====
   setCurrentPlaylist(name: string, index: number = 0): boolean {
     if (!this.playlists.has(name)) return false
     this.currentPlaylist = name
-    this.currentIndex = Math.max(0, Math.min(index, this.playlists.get(name)?.length || 1) - 1)
+    const songs = this.playlists.get(name) || []
+    if (songs.length === 0) {
+      this.currentIndex = -1
+      return true
+    }
+    this.currentIndex = Math.max(0, Math.min(index, songs.length - 1))
     return true
   }
 
   getCurrentPlaylistName(): string | null {
     return this.currentPlaylist
+  }
+
+  getCurrentIndex(): number {
+    return this.currentIndex
   }
 
   getCurrentSong(): Song | null {
@@ -305,22 +403,42 @@ class PlaylistService {
     return { songs, current }
   }
 
+  getPlaylistStateWithCursor(): { songs: Song[]; current: Song | null; currentIndex: number; playlistName: string | null } {
+    if (!this.currentPlaylist) {
+      return { songs: [], current: null, currentIndex: -1, playlistName: null }
+    }
+    const songs = this.playlists.get(this.currentPlaylist) || []
+    const current = this.getCurrentSong()
+    return { songs, current, currentIndex: this.currentIndex, playlistName: this.currentPlaylist }
+  }
+
   nextSong(): Song | null {
     if (!this.currentPlaylist) return null
     const playlist = this.playlists.get(this.currentPlaylist)
     if (!playlist) return null
-    if (this.currentIndex < playlist.length - 1) {
-      this.currentIndex++
+    if (playlist.length === 0) return null
+    if (this.currentIndex < 0 || this.currentIndex >= playlist.length) {
+      this.currentIndex = 0
+      return this.getCurrentSong()
     }
+    this.currentIndex = (this.currentIndex + 1) % playlist.length
     return this.getCurrentSong()
   }
 
   previousSong(): Song | null {
     if (!this.currentPlaylist) return null
-    if (this.currentIndex > 0) {
-      this.currentIndex--
+    const playlist = this.playlists.get(this.currentPlaylist)
+    if (!playlist || playlist.length === 0) return null
+    if (this.currentIndex < 0 || this.currentIndex >= playlist.length) {
+      this.currentIndex = playlist.length - 1
+      return this.getCurrentSong()
     }
+    this.currentIndex = (this.currentIndex - 1 + playlist.length) % playlist.length
     return this.getCurrentSong()
+  }
+
+  selectSongById(songId: string): Song | null {
+    return this.updateCurrentSongId(songId)
   }
 
   selectSong(title: string): Song | null {
@@ -413,6 +531,7 @@ class YoutubeService {
       const songs: Song[] = videos
         .filter(video => !!video.url)
         .map(video => ({
+          id: randomUUID(),
           title: video.title || 'Unknown Title',
           artist: video.channel?.name || 'YouTube',
           duration: this.formatDuration(video.durationInSec || 0),
@@ -451,6 +570,7 @@ class YoutubeService {
         // Try to get video info
         const info = await ytdl.getBasicInfo(videoId)
         const song: Song = {
+          id: randomUUID(),
           title: info.videoDetails.title || 'YouTube Video',
           artist: info.videoDetails.author?.name || 'YouTube',
           duration: this.formatDuration(parseInt(info.videoDetails.lengthSeconds || '0', 10)),
@@ -464,6 +584,7 @@ class YoutubeService {
         console.warn(`⚠️  Could not fetch video details: ${e instanceof Error ? e.message : String(e)}`)
         // Fallback to generic placeholder
         return {
+          id: randomUUID(),
           title: 'YouTube Video',
           artist: 'YouTube',
           duration: '00:00',
@@ -490,7 +611,7 @@ class LibraryService {
       if (exists) {
         const data = await fs.readFile(this.libraryFile, 'utf-8')
         const parsed = JSON.parse(data) as Song[]
-        this.librarySongs = Array.isArray(parsed) ? parsed : []
+        this.librarySongs = Array.isArray(parsed) ? parsed.map((song) => ensureSongId(song)) : []
         console.log(`✓ Loaded ${this.librarySongs.length} songs in library`)
       } else {
         this.librarySongs = []
@@ -523,11 +644,12 @@ class LibraryService {
   }
 
   addSong(song: Song): boolean {
+    const normalized = ensureSongId(song)
     // Check if song already exists
-    const exists = this.librarySongs.some(s => s.audio_url === song.audio_url)
+    const exists = this.librarySongs.some(s => s.audio_url === normalized.audio_url)
     if (exists) return false
 
-    this.librarySongs.push(song)
+    this.librarySongs.push(normalized)
     this.saveLibrary().catch(err => console.error('Error saving library:', err))
     return true
   }
@@ -578,19 +700,22 @@ app.get('/api/health', (_req, res) => {
 
 // ============ PLAYER STATE (Global Playlist) ============
 app.get('/api/playlist', (_req, res) => {
-  const state = playlistService.getPlaylistState()
+  const state = playlistService.getPlaylistStateWithCursor()
   res.json(state)
 })
 
 app.post('/api/playlist/select', (req: Request, res: Response) => {
-  const { name, index } = req.body as { name: string; index?: number }
+  const { name, index, songId } = req.body as { name: string; index?: number; songId?: string }
   if (!name) {
     res.status(400).json({ detail: 'Playlist name required' })
     return
   }
 
   if (playlistService.setCurrentPlaylist(name, index)) {
-    const state = playlistService.getPlaylistState()
+    if (songId) {
+      playlistService.selectSongById(songId)
+    }
+    const state = playlistService.getPlaylistStateWithCursor()
     res.json({ message: `Loaded playlist: ${name}`, ...state })
   } else {
     res.status(404).json({ detail: `Playlist '${name}' not found` })
@@ -599,7 +724,7 @@ app.post('/api/playlist/select', (req: Request, res: Response) => {
 
 app.post('/api/playlist/select-songs', (_req: Request, res: Response) => {
   if (playlistService.setCurrentPlaylist(SONGS_PLAYLIST)) {
-    const state = playlistService.getPlaylistState()
+    const state = playlistService.getPlaylistStateWithCursor()
     res.json({ message: 'Loaded songs', ...state })
   } else {
     res.status(500).json({ detail: 'Songs list not available' })
@@ -610,7 +735,8 @@ app.post('/api/playlist/select-songs', (_req: Request, res: Response) => {
 app.post('/api/player/next', (_req, res) => {
   const song = playlistService.nextSong()
   if (song) {
-    res.json({ message: 'Playing next', current: song })
+    const state = playlistService.getPlaylistStateWithCursor()
+    res.json({ message: 'Playing next', ...state })
   } else {
     res.status(400).json({ detail: 'No playlist loaded' })
   }
@@ -619,9 +745,21 @@ app.post('/api/player/next', (_req, res) => {
 app.post('/api/player/previous', (_req, res) => {
   const song = playlistService.previousSong()
   if (song) {
-    res.json({ message: 'Playing previous', current: song })
+    const state = playlistService.getPlaylistStateWithCursor()
+    res.json({ message: 'Playing previous', ...state })
   } else {
     res.status(400).json({ detail: 'No playlist loaded' })
+  }
+})
+
+app.post('/api/player/select-id/:id', (req: Request, res: Response) => {
+  const id = decodeURIComponent(req.params.id)
+  const song = playlistService.selectSongById(id)
+  if (song) {
+    const state = playlistService.getPlaylistStateWithCursor()
+    res.json({ message: `Selected by id`, ...state })
+  } else {
+    res.status(404).json({ detail: `Song id '${id}' not found` })
   }
 })
 
@@ -629,7 +767,8 @@ app.post('/api/player/select/:title', (req: Request, res: Response) => {
   const title = decodeURIComponent(req.params.title)
   const song = playlistService.selectSong(title)
   if (song) {
-    res.json({ message: `Selected: ${title}`, current: song })
+    const state = playlistService.getPlaylistStateWithCursor()
+    res.json({ message: `Selected: ${title}`, ...state })
   } else {
     res.status(404).json({ detail: `Song '${title}' not found` })
   }
@@ -698,7 +837,7 @@ app.delete('/api/playlists/:name', (req: Request, res: Response) => {
 
 app.post('/api/playlists/:name/add-song', (req: Request, res: Response) => {
   const name = decodeURIComponent(req.params.name)
-  const song = req.body as Song
+  const song = ensureSongId(req.body as Song | Omit<Song, 'id'>)
 
   const playlist = playlistService.getPlaylist(name)
   if (!playlist) {
@@ -807,6 +946,10 @@ app.post('/api/playlists/:name/move-song', (req: Request, res: Response) => {
   }
 
   if (playlistService.moveSong(name, fromIndex, toIndex)) {
+    const current = playlistService.getCurrentSong()
+    if (current?.id) {
+      playlistService.syncCurrentIndexBySongId(current.id)
+    }
     const updatedPlaylist = playlistService.getPlaylist(name)
     res.json({
       message: `Moved song from index ${fromIndex} to ${toIndex}`,
@@ -906,6 +1049,7 @@ app.post('/api/playlist/upload-local', upload.array('files', 50), async (req: Re
   try {
     const uploadedFiles = req.files as Express.Multer.File[]
     const songs: Song[] = uploadedFiles.map(file => ({
+      id: randomUUID(),
       title: normalizeSongTitle(path.parse(file.filename).name),
       artist: 'Local File',
       duration: '00:00',
@@ -1013,26 +1157,25 @@ app.get('/api/stream', async (req: Request, res: Response) => {
     // Check if it's a YouTube URL
     if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) {
       try {
-        // Use yt-dlp first and prefer m4a/mp4a for browser compatibility
-        const info = await youtubeDl(url, {
-          dumpSingleJson: true,
-          skipDownload: true,
-          noWarnings: true,
-          callHome: false,
-          format: '140/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio',
-        }) as unknown as {
-          url?: string
-          requested_downloads?: Array<{ url?: string; http_headers?: Record<string, string> }>
-        }
-
-        const directUrl = info?.requested_downloads?.[0]?.url || info?.url
-        const directHeaders = info?.requested_downloads?.[0]?.http_headers
-        if (!directUrl) {
+        const candidates = await resolveYouTubeAudioCandidates(url)
+        if (candidates.length === 0) {
           throw new Error('yt-dlp did not return a direct media URL')
         }
 
-        await proxyRemoteAudio(directUrl, req, res, directHeaders)
-        return
+        let lastError: string | null = null
+        for (const candidate of candidates) {
+          try {
+            if (candidate.contentTypeHint) {
+              res.setHeader('content-type', candidate.contentTypeHint)
+            }
+            await proxyRemoteAudio(candidate.url, req, res, candidate.headers)
+            return
+          } catch (candidateErr) {
+            lastError = candidateErr instanceof Error ? candidateErr.message : String(candidateErr)
+          }
+        }
+
+        throw new Error(lastError || 'No candidate stream could be proxied')
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
         console.warn('Could not stream YouTube audio:', msg)
