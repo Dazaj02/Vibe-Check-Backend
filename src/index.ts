@@ -35,6 +35,7 @@ interface YoutubeImportRequest {
 
 // ============ CONFIGURATION ============
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8000
+const PROXY_TIMEOUT_MS = process.env.PROXY_TIMEOUT_MS ? parseInt(process.env.PROXY_TIMEOUT_MS, 10) : 15000
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads')
 const PLAYLISTS_FILE = path.join(__dirname, '..', 'playlists.json')
 const SONGS_PLAYLIST = '__songs__'
@@ -69,6 +70,7 @@ const proxyRemoteAudio = (
   req: Request,
   res: Response,
   extraHeaders?: Record<string, string>,
+  redirectCount = 0,
 ): Promise<void> => {
   return new Promise((resolve, reject) => {
     const upstreamHeaders: Record<string, string> = {
@@ -93,6 +95,24 @@ const proxyRemoteAudio = (
       headers: upstreamHeaders,
     }, (remoteRes) => {
       const status = remoteRes.statusCode || 500
+
+      if (status >= 300 && status < 400) {
+        const location = remoteRes.headers.location
+        if (!location) {
+          reject(new Error(`Remote audio redirect without location (status ${status})`))
+          return
+        }
+        if (redirectCount >= 5) {
+          reject(new Error('Remote audio redirect limit reached'))
+          return
+        }
+
+        const nextUrl = new URL(location, remoteUrl).toString()
+        proxyRemoteAudio(nextUrl, req, res, extraHeaders, redirectCount + 1)
+          .then(resolve)
+          .catch(reject)
+        return
+      }
 
       if (status >= 400) {
         reject(new Error(`Remote audio request failed with status ${status}`))
@@ -133,6 +153,9 @@ const proxyRemoteAudio = (
     })
 
     upstreamReq.on('error', reject)
+    upstreamReq.setTimeout(PROXY_TIMEOUT_MS, () => {
+      upstreamReq.destroy(new Error(`Remote audio request timeout after ${PROXY_TIMEOUT_MS}ms`))
+    })
     upstreamReq.end()
   })
 }
