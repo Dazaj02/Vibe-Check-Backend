@@ -802,11 +802,26 @@ const app: Express = express()
 // ============ MIDDLEWARE ============
 app.use(
   cors({
-    origin: ALLOWED_ORIGINS,
+    origin: function(origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+      } else {
+        // Fallback: log the origin to help debug, but still allow it if it looks like Vercel
+        console.warn(`CORS warning: Unrecognized origin ${origin} - allowing temporarily`);
+        if (origin.includes('vercel.app')) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD', 'PUT', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Range', 'Authorization', 'Accept', 'X-Requested-With'],
-    exposedHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Content-Type'],
+    allowedHeaders: ['Content-Type', 'Range', 'Authorization', 'Accept', 'X-Requested-With', 'Cache-Control', 'X-Forwarded-For'],
+    exposedHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Content-Type', 'Access-Control-Allow-Origin', 'Access-Control-Allow-Credentials'],
   })
 )
 app.use(express.json({ limit: '50mb' }))
