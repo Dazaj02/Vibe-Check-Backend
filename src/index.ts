@@ -3,6 +3,7 @@ import cors from 'cors'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs/promises'
+import { createReadStream } from 'fs'
 import { request as httpsRequest } from 'https'
 import { createHash, randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
@@ -775,8 +776,9 @@ app.use(
   cors({
     origin: ALLOWED_ORIGINS,
     credentials: true,
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'],
+    allowedHeaders: ['Content-Type', 'Range'],
+    exposedHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Content-Type'],
   })
 )
 app.use(express.json({ limit: '50mb' }))
@@ -1232,6 +1234,8 @@ app.get('/api/stream', async (req: Request, res: Response) => {
     return
   }
 
+  const requestedRange = req.headers.range
+
   try {
     // Local uploaded file path: serve directly from uploads
     if (url.startsWith('/')) {
@@ -1239,8 +1243,47 @@ app.get('/api/stream', async (req: Request, res: Response) => {
       const filePath = path.join(UPLOADS_DIR, fileName)
 
       try {
-        await fs.access(filePath)
-        res.sendFile(filePath)
+        const stats = await fs.stat(filePath)
+        const totalSize = stats.size
+        const ext = path.extname(filePath).toLowerCase()
+        const mimeType =
+          ext === '.mp3' ? 'audio/mpeg' :
+          ext === '.wav' ? 'audio/wav' :
+          ext === '.ogg' ? 'audio/ogg' :
+          ext === '.flac' ? 'audio/flac' :
+          'audio/mp4'
+
+        res.setHeader('Content-Type', mimeType)
+        res.setHeader('Accept-Ranges', 'bytes')
+        res.setHeader('Cache-Control', 'public, max-age=3600')
+
+        if (requestedRange) {
+          const match = /^bytes=(\d*)-(\d*)$/.exec(requestedRange)
+          if (!match) {
+            res.status(416).setHeader('Content-Range', `bytes */${totalSize}`).end()
+            return
+          }
+
+          const start = match[1] ? parseInt(match[1], 10) : 0
+          const end = match[2] ? parseInt(match[2], 10) : totalSize - 1
+
+          if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= totalSize) {
+            res.status(416).setHeader('Content-Range', `bytes */${totalSize}`).end()
+            return
+          }
+
+          const safeEnd = Math.min(end, totalSize - 1)
+          const chunkSize = safeEnd - start + 1
+
+          res.status(206)
+          res.setHeader('Content-Range', `bytes ${start}-${safeEnd}/${totalSize}`)
+          res.setHeader('Content-Length', String(chunkSize))
+          createReadStream(filePath, { start, end: safeEnd }).pipe(res)
+          return
+        }
+
+        res.setHeader('Content-Length', String(totalSize))
+        createReadStream(filePath).pipe(res)
         return
       } catch {
         res.status(404).json({ error: 'Local audio file not found' })
