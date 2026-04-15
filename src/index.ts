@@ -804,8 +804,8 @@ app.use(
   cors({
     origin: ALLOWED_ORIGINS,
     credentials: true,
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'],
-    allowedHeaders: ['Content-Type', 'Range'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD', 'PUT', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Range', 'Authorization', 'Accept', 'X-Requested-With'],
     exposedHeaders: ['Accept-Ranges', 'Content-Range', 'Content-Length', 'Content-Type'],
   })
 )
