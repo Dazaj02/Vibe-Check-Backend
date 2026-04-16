@@ -182,6 +182,7 @@ const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCa
         noWarnings: true,
         callHome: false,
         format,
+        ...(YOUTUBE_COOKIES ? { cookies: COOKIES_FILE } : {})
       }) as unknown as {
         url?: string
         ext?: string
@@ -221,6 +222,28 @@ const ALLOWED_ORIGINS = rawOrigins.length > 0 ? rawOrigins : [
 
 // Ensure uploads directory exists
 await fs.mkdir(UPLOADS_DIR, { recursive: true }).catch(() => {})
+
+// ============ YOUTUBE COOKIES SETUP ============
+const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || ''
+const COOKIES_FILE = path.join(__dirname, '..', 'youtube-cookies.txt')
+
+if (YOUTUBE_COOKIES) {
+  try {
+    // Write cookies to a file for yt-dlp to read
+    await fs.writeFile(COOKIES_FILE, YOUTUBE_COOKIES.replace(/\\n/g, '\n'), 'utf-8')
+    console.log('✓ YouTube cookies configured for yt-dlp')
+    
+    // Set cookies for play-dl
+    play.setToken({
+      youtube: {
+        cookie: YOUTUBE_COOKIES
+      }
+    })
+    console.log('✓ YouTube cookies configured for play-dl')
+  } catch (err) {
+    console.error('❌ Failed to setup YouTube cookies:', err)
+  }
+}
 
 // ============ MULTER CONFIGURATION ============
 const upload = multer({
@@ -573,6 +596,7 @@ class YoutubeService {
       skipDownload: true,
       noWarnings: true,
       callHome: false,
+      ...(YOUTUBE_COOKIES ? { cookies: COOKIES_FILE } : {})
     }) as unknown as {
       entries?: Array<{
         id?: string
