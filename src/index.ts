@@ -270,27 +270,6 @@ if (YOUTUBE_COOKIES) {
     console.error('❌ Failed to setup YouTube cookies:', err)
   }
 }
-  return lines.join('\n');
-}
-
-if (YOUTUBE_COOKIES) {
-  try {
-    // Write cookies to a file for yt-dlp to read in Netscape format
-    const netscapeCookies = convertToNetscapeFormat(YOUTUBE_COOKIES);
-    await fs.writeFile(COOKIES_FILE, netscapeCookies, 'utf-8')
-    console.log('✓ YouTube cookies configured for yt-dlp')
-    
-    // Set cookies for play-dl
-    play.setToken({
-      youtube: {
-        cookie: YOUTUBE_COOKIES
-      }
-    })
-    console.log('✓ YouTube cookies configured for play-dl')
-  } catch (err) {
-    console.error('❌ Failed to setup YouTube cookies:', err)
-  }
-}
 
 // ============ MULTER CONFIGURATION ============
 const upload = multer({
