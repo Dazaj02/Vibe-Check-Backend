@@ -227,10 +227,31 @@ await fs.mkdir(UPLOADS_DIR, { recursive: true }).catch(() => {})
 const YOUTUBE_COOKIES = process.env.YOUTUBE_COOKIES || ''
 const COOKIES_FILE = path.join(__dirname, '..', 'youtube-cookies.txt')
 
+const convertToNetscapeFormat = (cookieString: string): string => {
+  const lines: string[] = ['# Netscape HTTP Cookie File', '# http://curl.haxx.se/rfc/cookie_spec.html', '# This is a generated file!  Do not edit.', ''];
+  const cookies = cookieString.split(';').map(c => c.trim()).filter(c => c);
+
+  for (const cookie of cookies) {
+    const [name, ...valueParts] = cookie.split('=');
+    const value = valueParts.join('=');
+    // Set typical YouTube cookie attributes
+    const domain = '.youtube.com';
+    const isDomain = 'TRUE';
+    const path = '/';
+    const secure = name.startsWith('__Secure') ? 'TRUE' : 'FALSE';
+    // Set expiration 1 year from now
+    const expires = Math.floor(Date.now() / 1000) + 31536000;
+
+    lines.push(`${domain}\t${isDomain}\t${path}\t${secure}\t${expires}\t${name}\t${value}`);
+  }
+  return lines.join('\n');
+}
+
 if (YOUTUBE_COOKIES) {
   try {
-    // Write cookies to a file for yt-dlp to read
-    await fs.writeFile(COOKIES_FILE, YOUTUBE_COOKIES.replace(/\\n/g, '\n'), 'utf-8')
+    // Write cookies to a file for yt-dlp to read in Netscape format
+    const netscapeCookies = convertToNetscapeFormat(YOUTUBE_COOKIES);
+    await fs.writeFile(COOKIES_FILE, netscapeCookies, 'utf-8')
     console.log('✓ YouTube cookies configured for yt-dlp')
     
     // Set cookies for play-dl
