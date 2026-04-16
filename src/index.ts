@@ -174,6 +174,8 @@ const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCa
   ]
 
   const candidates: DirectAudioCandidate[] = []
+  let lastError: Error | null = null
+  
   for (const format of formats) {
     try {
       const info = await youtubeDl(url, {
@@ -200,9 +202,14 @@ const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCa
       if (!candidates.some((candidate) => candidate.url === directUrl)) {
         candidates.push({ url: directUrl, headers: directHeaders, contentTypeHint })
       }
-    } catch {
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
       // Try next format fallback
     }
+  }
+
+  if (candidates.length === 0 && lastError) {
+    throw lastError
   }
 
   return candidates
