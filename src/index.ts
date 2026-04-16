@@ -1361,14 +1361,21 @@ app.get('/api/stream', async (req: Request, res: Response) => {
         console.warn('Could not stream YouTube audio:', msg)
         // Final fallback to play-dl stream
         try {
-          res.setHeader('Content-Type', 'audio/webm')
-          res.setHeader('Accept-Ranges', 'bytes')
+          if (!res.headersSent) {
+            res.setHeader('Content-Type', 'audio/webm')
+            res.setHeader('Accept-Ranges', 'bytes')
+          }
           const ytStream = await play.stream(url, { quality: 2 })
           ytStream.stream.pipe(res)
           return
         } catch (playErr) {
           const playMsg = playErr instanceof Error ? playErr.message : String(playErr)
-          res.status(500).json({ error: `Could not stream YouTube audio: ${msg} | playdl: ${playMsg}` })
+          if (!res.headersSent) {
+            res.status(500).json({ error: `Could not stream YouTube audio: ${msg} | playdl: ${playMsg}` })
+          } else {
+            console.error(`Stream error during playdl fallback: ${playMsg}`)
+            res.end()
+          }
         }
         return
       }
