@@ -168,9 +168,9 @@ interface DirectAudioCandidate {
 
 const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCandidate[]> => {
   const formats = [
-    '140/bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio',
-    '251/bestaudio[ext=webm]/bestaudio',
-    'bestaudio',
+    'ba[ext=m4a]/ba[ext=webm]/ba/bestaudio/best', // Any best audio
+    '140/251/139/250', // Specific known audio codes
+    'best', // Ultimate fallback
   ]
 
   const candidates: DirectAudioCandidate[] = []
@@ -182,7 +182,6 @@ const resolveYouTubeAudioCandidates = async (url: string): Promise<DirectAudioCa
         dumpSingleJson: true,
         skipDownload: true,
         noWarnings: true,
-        callHome: false,
         format,
         ...(YOUTUBE_COOKIES ? { cookies: COOKIES_FILE } : {})
       }) as unknown as {
@@ -621,7 +620,6 @@ class YoutubeService {
       flatPlaylist: true,
       skipDownload: true,
       noWarnings: true,
-      callHome: false,
       ...(YOUTUBE_COOKIES ? { cookies: COOKIES_FILE } : {})
     }) as unknown as {
       entries?: Array<{
